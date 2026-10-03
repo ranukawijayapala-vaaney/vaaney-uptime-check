@@ -15,7 +15,8 @@ name: Staging health
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    # Offset from busy hour/quarter-hour boundaries; still four checks per hour.
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       test_alert:
