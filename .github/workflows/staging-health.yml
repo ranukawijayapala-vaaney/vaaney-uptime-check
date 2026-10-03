@@ -1,0 +1,54 @@
+# Zero-cost uptime check for the Vaaney staging service (owner decision, 3 October 2026).
+#
+# Public repository on purpose: GitHub-hosted runners are free for public repositories, so this never uses the
+# private Vaaney-core repository's included Actions minutes (GitHub Free, 2,000/month, $0 budget with "stop usage").
+# It reads ONLY the public readiness page, which carries no secrets; the address is already public. No secret is
+# stored here. Output is the HTTP status and the readiness word, never the response body.
+#
+# A failure emails the owner through GitHub's Actions notifications ("failed workflows only"). Limits:
+# - GitHub runs schedules on a best-effort basis; runs can be delayed or dropped, so this is not a guaranteed
+#   15-minute alert.
+# - GitHub disables scheduled workflows in a public repository after 60 days with no repository activity; it emails
+#   a warning first. Re-enable from the Actions tab.
+# - It covers the database and schema only (what /health/ready checks), NOT object storage.
+name: Staging health
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      test_alert:
+        description: "Fail on purpose (does not touch staging) to confirm the alert email arrives"
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Test alert (manual only)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_alert }}
+        run: |
+          echo "Deliberate test failure to confirm alert delivery. Staging was not contacted."
+          exit 1
+
+      - name: Check /health/ready
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_alert) }}
+        run: |
+          url="https://vaaney-core-staging.up.railway.app/health/ready"
+          # Three attempts 30 s apart: the database can take a moment to wake (DEFERRED_CONSTRAINTS, "/health/ready flaps").
+          for attempt in 1 2 3; do
+            body=$(mktemp)
+            code=$(curl -s -o "$body" -w '%{http_code}' --max-time 20 "$url" || echo "000")
+            state=$(jq -r 'if (.status|type)=="string" and (.status|test("^[a-z_]{1,20}$")) then .status else "unrecognised" end' "$body" 2>/dev/null || echo "unreadable")
+            rm -f "$body"
+            echo "attempt $attempt: HTTP $code, status $state"
+            if [ "$code" = "200" ] && [ "$state" = "ready" ]; then exit 0; fi
+            [ "$attempt" -lt 3 ] && sleep 30
+          done
+          echo "Staging is NOT ready after three attempts."
+          exit 1
